@@ -31,6 +31,18 @@ class TableLayoutElement extends LayoutElement {
 
   @override
   Widget toWidget(RenderContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: style.backgroundColor,
+        border: style.border,
+      ),
+      width: style.width,
+      height: style.height,
+      child: _layoutCells(context),
+    );
+  }
+
+  Widget _layoutCells(RenderContext context) {
     final rows = <TableRowLayoutElement>[];
     List<TrackSize> columnSizes = <TrackSize>[];
     for (var child in children) {
@@ -46,16 +58,16 @@ class TableLayoutElement extends LayoutElement {
                 if (colWidth != null && colWidth.endsWith("%")) {
                   final percentageSize = double.tryParse(
                       colWidth.substring(0, colWidth.length - 1));
-                  return percentageSize != null
+                  return percentageSize != null && !percentageSize.isNaN
                       ? FlexibleTrackSize(percentageSize * 0.01)
-                      : FlexibleTrackSize(1);
+                      : IntrinsicContentTrackSize();
                 } else if (colWidth != null) {
                   final fixedPxSize = double.tryParse(colWidth);
                   return fixedPxSize != null
                       ? FixedTrackSize(fixedPxSize)
-                      : FlexibleTrackSize(1);
+                      : IntrinsicContentTrackSize();
                 } else {
-                  return FlexibleTrackSize(1);
+                  return IntrinsicContentTrackSize();
                 }
               });
             })
@@ -101,11 +113,13 @@ class TableLayoutElement extends LayoutElement {
               ),
               child: SizedBox.expand(
                 child: Container(
-                  alignment: child.style.alignment ?? style.alignment ??
+                  alignment: child.style.alignment ??
+                      style.alignment ??
                       Alignment.centerLeft,
                   child: StyledText(
                     textSpan: context.parser.parseTree(context, child),
                     style: child.style,
+                    renderContext: context,
                   ),
                 ),
               ),
@@ -123,28 +137,20 @@ class TableLayoutElement extends LayoutElement {
     }
 
     // Create column tracks (insofar there were no colgroups that already defined them)
-    List<TrackSize> finalColumnSizes = (columnSizes ?? <TrackSize>[]).take(
-        columnMax).toList();
+    List<TrackSize> finalColumnSizes =
+        (columnSizes ?? <TrackSize>[]).take(columnMax).toList();
     finalColumnSizes += List.generate(
         max(0, columnMax - finalColumnSizes.length),
-            (_) => FlexibleTrackSize(1));
-    return Container(
-      decoration: BoxDecoration(
-        color: style.backgroundColor,
-        border: style.border,
-      ),
-      width: style.width,
-      height: style.height,
-      child: LayoutGrid(
-        gridFit: GridFit.loose,
-        templateColumnSizes: finalColumnSizes,
-        templateRowSizes: rowSizes,
-        children: cells,
-      ),
+        (_) => IntrinsicContentTrackSize());
+
+    return LayoutGrid(
+      gridFit: GridFit.loose,
+      templateColumnSizes: finalColumnSizes,
+      templateRowSizes: rowSizes,
+      children: cells,
     );
   }
 }
-
 
 class TableSectionLayoutElement extends LayoutElement {
   TableSectionLayoutElement({
@@ -185,12 +191,12 @@ class TableCellElement extends StyledElement {
     Style style,
     dom.Element node,
   }) : super(
-      name: name,
-      elementId: elementId,
-      elementClasses: elementClasses,
-      children: children,
-      style: style,
-      node: node) {
+            name: name,
+            elementId: elementId,
+            elementClasses: elementClasses,
+            children: children,
+            style: style,
+            node: node) {
     colspan = _parseSpan(this, "colspan");
     rowspan = _parseSpan(this, "rowspan");
   }
@@ -201,8 +207,9 @@ class TableCellElement extends StyledElement {
   }
 }
 
-TableCellElement parseTableCellElement(dom.Element element,
-    List<StyledElement> children,
+TableCellElement parseTableCellElement(
+  dom.Element element,
+  List<StyledElement> children,
 ) {
   final cell = TableCellElement(
     name: element.localName,
@@ -228,8 +235,9 @@ class TableStyleElement extends StyledElement {
   }) : super(name: name, children: children, style: style, node: node);
 }
 
-TableStyleElement parseTableDefinitionElement(dom.Element element,
-    List<StyledElement> children,
+TableStyleElement parseTableDefinitionElement(
+  dom.Element element,
+  List<StyledElement> children,
 ) {
   switch (element.localName) {
     case "colgroup":
@@ -244,10 +252,86 @@ TableStyleElement parseTableDefinitionElement(dom.Element element,
   }
 }
 
-LayoutElement parseLayoutElement(dom.Element element,
+class DetailsContentElement extends LayoutElement {
+  List<dom.Element> elementList;
+
+  DetailsContentElement({
+    String name,
+    List<StyledElement> children,
+    dom.Element node,
+    this.elementList,
+  }) : super(name: name, node: node, children: children);
+
+  @override
+  Widget toWidget(RenderContext context) {
+    List<InlineSpan> childrenList = children?.map((tree) => context.parser.parseTree(context, tree))?.toList();
+    List<InlineSpan> toRemove = [];
+    if (childrenList != null) {
+      for (InlineSpan child in childrenList) {
+        if (child is TextSpan && child.text != null && child.text.trim().isEmpty) {
+          toRemove.add(child);
+        }
+      }
+      for (InlineSpan child in toRemove) {
+        childrenList.remove(child);
+      }
+    }
+    InlineSpan firstChild = childrenList?.isNotEmpty == true ? childrenList.first : null;
+    return ExpansionTile(
+        expandedAlignment: Alignment.centerLeft,
+        title: elementList?.isNotEmpty == true && elementList?.first?.localName == "summary" ? StyledText(
+          textSpan: TextSpan(
+            style: style.generateTextStyle(),
+            children: [firstChild] ?? [],
+          ),
+          style: style,
+          renderContext: context,
+        ) : Text("Details"),
+        children: [
+          StyledText(
+            textSpan: TextSpan(
+              style: style.generateTextStyle(),
+              children: getChildren(childrenList, context, elementList?.isNotEmpty == true && elementList?.first?.localName == "summary" ? firstChild : null)
+            ),
+            style: style,
+            renderContext: context,
+          ),
+        ]
+    );
+  }
+
+  List<InlineSpan> getChildren(List<InlineSpan> children, RenderContext context, InlineSpan firstChild) {
+    if (children == null) {
+      return [];
+    } else {
+      if (firstChild != null) children.removeAt(0);
+      return children;
+    }
+  }
+}
+
+class EmptyLayoutElement extends LayoutElement {
+  EmptyLayoutElement({String name = "empty"}) : super(name: name);
+
+  @override
+  Widget toWidget(_) => null;
+}
+
+LayoutElement parseLayoutElement(
+    dom.Element element,
     List<StyledElement> children,
 ) {
   switch (element.localName) {
+    case "details":
+      if (children?.isEmpty ?? false) {
+        return EmptyLayoutElement();
+      }
+      return DetailsContentElement(
+          node: element,
+          name: element.localName,
+          children: children,
+          elementList: element.children
+      );
     case "table":
       return TableLayoutElement(
         name: element.localName,

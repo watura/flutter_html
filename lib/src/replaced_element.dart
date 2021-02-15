@@ -1,5 +1,3 @@
-import 'dart:async';
-import 'dart:convert';
 import 'dart:math';
 
 import 'package:chewie/chewie.dart';
@@ -10,7 +8,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_html/html_parser.dart';
 import 'package:flutter_html/src/html_elements.dart';
-import 'package:flutter_html/src/utils.dart';
 import 'package:flutter_html/style.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:html/dom.dart' as dom;
@@ -81,114 +78,15 @@ class ImageContentElement extends ReplacedElement {
 
   @override
   Widget toWidget(RenderContext context) {
-    Widget imageWidget;
-    if (src == null) {
-      imageWidget = Text(alt ?? "", style: context.style.generateTextStyle());
-    } else if (src.startsWith("data:image") && src.contains("base64,")) {
-      final decodedImage = base64.decode(src.split("base64,")[1].trim());
-      precacheImage(
-        MemoryImage(decodedImage),
-        context.buildContext,
-        onError: (exception, StackTrace stackTrace) {
-          context.parser.onImageError?.call(exception, stackTrace);
-        },
-      );
-      imageWidget = Image.memory(
-        decodedImage,
-        frameBuilder: (ctx, child, frame, _) {
-          if (frame == null) {
-            return Text(alt ?? "", style: context.style.generateTextStyle());
-          }
-          return child;
-        },
-      );
-    } else if (src.startsWith("asset:")) {
-      final assetPath = src.replaceFirst('asset:', '');
-      precacheImage(
-        AssetImage(assetPath),
-        context.buildContext,
-        onError: (exception, StackTrace stackTrace) {
-          context.parser.onImageError?.call(exception, stackTrace);
-        },
-      );
-      imageWidget = Image.asset(
-        assetPath,
-        frameBuilder: (ctx, child, frame, _) {
-          if (frame == null) {
-            return Text(alt ?? "", style: context.style.generateTextStyle());
-          }
-          return child;
-        },
-      );
-    } else {
-      precacheImage(
-        NetworkImage(src),
-        context.buildContext,
-        onError: (exception, StackTrace stackTrace) {
-          context.parser.onImageError?.call(exception, stackTrace);
-        },
-      );
-      Completer<Size> completer = Completer();
-      Image image = Image.network(src, frameBuilder: (ctx, child, frame, _) {
-        if (frame == null) {
-          completer.completeError("error");
-          return child;
-        } else {
-          return child;
+    for (final entry in context.parser.imageRenders.entries) {
+      if (entry.key.call(attributes, element)) {
+        final widget = entry.value.call(context, attributes, element);
+        if (widget != null) {
+          return widget;
         }
-      });
-      image.image.resolve(ImageConfiguration()).addListener(
-        ImageStreamListener(
-              (ImageInfo image, bool synchronousCall) {
-            var myImage = image.image;
-            Size size = Size(myImage.width.toDouble(), myImage.height.toDouble());
-            completer.complete(size);
-          }, onError: (object, stacktrace) {
-            completer.completeError(object);
-          }
-        ),
-      );
-      imageWidget = FutureBuilder<Size>(
-        future: completer.future,
-        builder: (BuildContext buildContext, AsyncSnapshot<Size> snapshot) {
-          if (snapshot.hasData) {
-            return new Image.network(
-              src,
-              width: snapshot.data.width,
-              height: snapshot.data.height,
-              frameBuilder: (ctx, child, frame, _) {
-                if (frame == null) {
-                  return Text(alt ?? "", style: context.style.generateTextStyle());
-                }
-                return child;
-              },
-            );
-          } else if (snapshot.hasError) {
-            return Text(alt ?? "", style: context.style.generateTextStyle());
-          } else {
-            return new CircularProgressIndicator();
-          }
-        },
-      );
+      }
     }
-
-    return ContainerSpan(
-      style: style,
-      newContext: context,
-      shrinkWrap: context.parser.shrinkWrap,
-      child: RawGestureDetector(
-        child: imageWidget,
-        gestures: {
-          MultipleTapGestureRecognizer: GestureRecognizerFactoryWithHandlers<
-              MultipleTapGestureRecognizer>(
-            () => MultipleTapGestureRecognizer(),
-            (instance) {
-              instance..onTap = () => context.parser.onImageTap?.call(src);
-            },
-          ),
-        },
-      ),
-    );
+    return SizedBox(width: 0, height: 0);
   }
 }
 
@@ -211,15 +109,18 @@ class IframeContentElement extends ReplacedElement {
 
   @override
   Widget toWidget(RenderContext context) {
+    final sandboxMode = attributes["sandbox"];
     return Container(
       width: width ?? (height ?? 150) * 2,
       height: height ?? (width ?? 300) / 2,
       child: WebView(
         initialUrl: src,
-        javascriptMode: JavascriptMode.unrestricted,
+        javascriptMode: sandboxMode == null || sandboxMode == "allow-scripts"
+            ? JavascriptMode.unrestricted
+            : JavascriptMode.disabled,
         navigationDelegate: navigationDelegate,
         gestureRecognizers: {
-          Factory(() => PlatformViewVerticalGestureRecognizer())
+          Factory<VerticalDragGestureRecognizer>(() => VerticalDragGestureRecognizer())
         },
       ),
     );
@@ -293,20 +194,23 @@ class VideoContentElement extends ReplacedElement {
   Widget toWidget(RenderContext context) {
     final double _width = width ?? (height ?? 150) * 2;
     final double _height = height ?? (width ?? 300) / 2;
-    return Container(
-      child: Chewie(
-        controller: ChewieController(
-          videoPlayerController: VideoPlayerController.network(
-            src.first ?? "",
+    return AspectRatio(
+      aspectRatio: _width / _height,
+      child: Container(
+        child: Chewie(
+          controller: ChewieController(
+            videoPlayerController: VideoPlayerController.network(
+              src.first ?? "",
+            ),
+            placeholder: poster != null
+                ? Image.network(poster)
+                : Container(color: Colors.black),
+            autoPlay: autoplay,
+            looping: loop,
+            showControls: showControls,
+            autoInitialize: true,
+            aspectRatio: _width / _height,
           ),
-          placeholder: poster != null
-              ? Image.network(poster)
-              : Container(color: Colors.black),
-          autoPlay: autoplay,
-          looping: loop,
-          showControls: showControls,
-          autoInitialize: true,
-          aspectRatio: _width / _height,
         ),
       ),
     );
@@ -402,6 +306,9 @@ ReplacedElement parseReplacedElement(
         if (element.attributes['src'] != null) element.attributes['src'],
         ...ReplacedElement.parseMediaSources(element.children),
       ];
+      if (sources == null || sources.isEmpty || sources.first == null) {
+        return EmptyContentElement();
+      }
       return AudioContentElement(
         name: "audio",
         src: sources,
@@ -418,12 +325,12 @@ ReplacedElement parseReplacedElement(
       );
     case "iframe":
       return IframeContentElement(
-        name: "iframe",
-        src: element.attributes['src'],
-        width: double.tryParse(element.attributes['width'] ?? ""),
-        height: double.tryParse(element.attributes['height'] ?? ""),
-        navigationDelegate: navigationDelegateForIframe,
-      );
+          name: "iframe",
+          src: element.attributes['src'],
+          width: double.tryParse(element.attributes['width'] ?? ""),
+          height: double.tryParse(element.attributes['height'] ?? ""),
+          navigationDelegate: navigationDelegateForIframe,
+          node: element);
     case "img":
       return ImageContentElement(
         name: "img",
@@ -436,6 +343,9 @@ ReplacedElement parseReplacedElement(
         if (element.attributes['src'] != null) element.attributes['src'],
         ...ReplacedElement.parseMediaSources(element.children),
       ];
+      if (sources == null || sources.isEmpty || sources.first == null) {
+        return EmptyContentElement();
+      }
       return VideoContentElement(
         name: "video",
         src: sources,
@@ -461,43 +371,4 @@ ReplacedElement parseReplacedElement(
     default:
       return EmptyContentElement(name: element.localName);
   }
-}
-
-// TODO(Sub6Resources): Remove when https://github.com/flutter/flutter/issues/36304 is resolved
-class PlatformViewVerticalGestureRecognizer
-    extends VerticalDragGestureRecognizer {
-  PlatformViewVerticalGestureRecognizer({PointerDeviceKind kind})
-      : super(kind: kind);
-
-  Offset _dragDistance = Offset.zero;
-
-  @override
-  void addPointer(PointerEvent event) {
-    startTrackingPointer(event.pointer);
-  }
-
-  @override
-  void handleEvent(PointerEvent event) {
-    _dragDistance = _dragDistance + event.delta;
-    if (event is PointerMoveEvent) {
-      final double dy = _dragDistance.dy.abs();
-      final double dx = _dragDistance.dx.abs();
-
-      if (dy > dx && dy > kTouchSlop) {
-        // vertical drag - accept
-        resolve(GestureDisposition.accepted);
-        _dragDistance = Offset.zero;
-      } else if (dx > kTouchSlop && dx > dy) {
-        // horizontal drag - stop tracking
-        stopTrackingPointer(event.pointer);
-        _dragDistance = Offset.zero;
-      }
-    }
-  }
-
-  @override
-  String get debugDescription => 'horizontal drag (platform view)';
-
-  @override
-  void didStopTrackingLastPointer(int pointer) {}
 }
